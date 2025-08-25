@@ -1,0 +1,26 @@
+[
+  {
+    "model":"naive",
+    "MAE":0.189,
+    "RMSE":0.441,
+    "MAPE_%":78.79
+  },
+  {
+    "model":"seasonal_naive",
+    "MAE":0.13,
+    "RMSE":0.363,
+    "MAPE_%":51.83
+  },
+  {
+    "model":"moving_avg",
+    "MAE":0.217,
+    "RMSE":0.38,
+    "MAPE_%":88.32
+  },
+  {
+    "model":"LSTM",
+    "MAE":0.301,
+    "RMSE":0.473,
+    "MAPE_%":18.46
+  }
+]
