@@ -1,26 +1,38 @@
 [
   {
     "model":"naive",
-    "MAE":0.189,
-    "RMSE":0.441,
-    "MAPE_%":78.79
+    "MAE":0.216,
+    "RMSE":0.489,
+    "MAPE_%":84.66
   },
   {
     "model":"seasonal_naive",
-    "MAE":0.13,
-    "RMSE":0.363,
-    "MAPE_%":51.83
+    "MAE":0.149,
+    "RMSE":0.403,
+    "MAPE_%":56.43
   },
   {
     "model":"moving_avg",
-    "MAE":0.217,
-    "RMSE":0.38,
-    "MAPE_%":88.32
+    "MAE":0.24,
+    "RMSE":0.412,
+    "MAPE_%":90.17
   },
   {
     "model":"LSTM",
-    "MAE":0.301,
-    "RMSE":0.473,
-    "MAPE_%":18.46
+    "MAE":0.289,
+    "RMSE":0.463,
+    "MAPE_%":19.88
+  },
+  {
+    "model":"sarima",
+    "MAE":0.184,
+    "RMSE":0.316,
+    "MAPE_%":53.91
+  },
+  {
+    "model":"prophet",
+    "MAE":0.203,
+    "RMSE":0.323,
+    "MAPE_%":63.49
   }
 ]

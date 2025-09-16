@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 import math
 import numpy as np
 import pandas as pd
@@ -15,33 +17,88 @@ st.set_page_config(
 st.title("⚡ EVAT — Congestion (3-hour arrivals)")
 st.caption("Predict arrivals, recompute queue waits with **Erlang-C**, and test **what-if** scenarios for charger count and service speed.")
 
+# -------------------------- Paths & defaults --------------------------
+ART = Path("artifacts_premium")
+PRED_PATH   = ART / "predictions_3h_with_wait_times.csv"   # from test eval cell
+FUTURE_PATH = ART / "future_forecast_3h.csv"               # from future-forecast cells
+SUMMARY_PATH= ART / "forecast_summary.csv"
+
+MU_DEFAULT = 2.0   # jobs/hour/charger (~30 min)
+C_DEFAULT  = 4
+
 # -------------------------- Data loading --------------------------
 @st.cache_data(show_spinner=False)
 def load_data(csv_path: str) -> pd.DataFrame:
-    df = pd.read_csv(csv_path, parse_dates=["timestamp"])
-    # Ensure needed columns / safe defaults
-    if "lambda_hour" not in df.columns and "pred_arrivals_3h" in df.columns:
-        df["lambda_hour"] = np.clip(df["pred_arrivals_3h"], 0, None) / 3.0
+    df = pd.read_csv(csv_path)
+    # timestamp unification
+    if "ts" in df.columns and "timestamp" not in df.columns:
+        df["timestamp"] = pd.to_datetime(df["ts"])
+    else:
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+    # station id unification
+    if "station_id" in df.columns and "stationId" not in df.columns:
+        df["stationId"] = df["station_id"].astype(str)
+    if "stationId" in df.columns:
+        df["stationId"] = df["stationId"].astype(str)
+
+    # unify μ and c naming
+    if "mu" not in df.columns and "mu_per_hour" in df.columns:
+        df["mu"] = df["mu_per_hour"]
     if "c" not in df.columns:
-        df["c"] = 1
-    if "mu" not in df.columns:
-        df["mu"] = np.nan
-    # Standardize column presence for charts
-    for col in ["arrivals", "pred_arrivals_3h", "expected_wait_mins", "expected_queue_len", "stationId"]:
+        df["c"] = np.nan
+
+    # arrivals predictions (test vs future)
+    # - test file: pred_arrivals_3h, lambda_hour, expected_wait_mins, rho
+    # - future file: lambda_pred_3h (expected for 3h), lo80/hi80, lo95/hi95, p_wait, rho, Wq_min
+    if "pred_arrivals_3h" not in df.columns and "lambda_pred_3h" in df.columns:
+        df["pred_arrivals_3h"] = df["lambda_pred_3h"]
+    if "lambda_hour" not in df.columns:
+        if "pred_arrivals_3h" in df.columns:
+            df["lambda_hour"] = np.clip(df["pred_arrivals_3h"], 0, None) / 3.0
+        else:
+            df["lambda_hour"] = np.nan
+
+    # expected wait column unification
+    if "expected_wait_mins" not in df.columns and "Wq_min" in df.columns:
+        df["expected_wait_mins"] = df["Wq_min"]
+
+    # ensure optional columns exist (for charts/table)
+    for col in ["arrivals", "pred_arrivals_3h", "expected_wait_mins", "expected_queue_len",
+                "stationId", "lo80", "hi80", "lo95", "hi95", "p_wait", "rho"]:
         if col not in df.columns:
             df[col] = np.nan
     return df
 
-path = "predictions_3h_with_wait_times.csv"
-df = load_data(path)
+# Try to load both sources if they exist
+df_pred = load_data(PRED_PATH.as_posix()) if PRED_PATH.exists() else None
+df_future = load_data(FUTURE_PATH.as_posix()) if FUTURE_PATH.exists() else None
+df_summary = pd.read_csv(SUMMARY_PATH) if SUMMARY_PATH.exists() else None
 
 # -------------------------- Sidebar controls --------------------------
+sources = []
+if df_pred is not None: sources.append("Test predictions")
+if df_future is not None: sources.append("Future forecast")
+if not sources:
+    st.error("No artifacts found. Run the notebook to generate files under 'artifacts_premium/'.")
+    st.stop()
+
+st.sidebar.header("Data source")
+source = st.sidebar.radio("Choose", sources, index=0)
+
+df = df_pred if source == "Test predictions" else df_future
+
 st.sidebar.header("Filters")
 stations = sorted([str(s) for s in df["stationId"].dropna().unique().tolist()])
 sid = st.sidebar.selectbox("Station", stations)
 
 # Station slice & date range
-d_base = df[df["stationId"].astype(str) == sid].sort_values("timestamp").copy()
+d_base = df[df["stationId"].astype(str) == sid].copy()
+if d_base.empty:
+    st.warning("No rows for the selected station in this source.")
+    st.stop()
+
+d_base = d_base.sort_values("timestamp")
 min_dt, max_dt = d_base["timestamp"].min(), d_base["timestamp"].max()
 date_range = st.sidebar.date_input(
     "Date range",
@@ -51,7 +108,7 @@ date_range = st.sidebar.date_input(
 )
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start_dt = pd.to_datetime(date_range[0])
-    end_dt = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1)  # inclusive end
+    end_dt = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1)
     d_base = d_base[(d_base["timestamp"] >= start_dt) & (d_base["timestamp"] < end_dt)]
 
 st.sidebar.header("What-if settings")
@@ -63,7 +120,7 @@ wait_target   = st.sidebar.number_input("Target max wait (mins)", min_value=0, v
 # -------------------------- Erlang-C helper --------------------------
 def erlang_c_wait_time(lam_hour: float, mu_hour: float, c: int):
     """Return (Wq_hours, Lq, rho). Safe for edge cases."""
-    if c <= 0 or mu_hour is None or np.isnan(mu_hour) or mu_hour <= 0:
+    if c <= 0 or mu_hour is None or (isinstance(mu_hour, float) and np.isnan(mu_hour)) or mu_hour <= 0:
         return np.nan, np.nan, np.nan
     if lam_hour <= 0:
         return 0.0, 0.0, 0.0
@@ -87,6 +144,13 @@ def erlang_c_wait_time(lam_hour: float, mu_hour: float, c: int):
 
 # -------------------------- What-if recompute --------------------------
 d = d_base.copy()
+
+# Fill μ and c if absent (common for the future-forecast artifact)
+if "mu" not in d.columns or d["mu"].isna().all():
+    d["mu"] = MU_DEFAULT
+if "c" not in d.columns or d["c"].isna().all():
+    d["c"] = C_DEFAULT
+
 d["c_adj"]  = np.maximum(1, np.round(d["c"] * c_multiplier).astype(int))
 d["mu_adj"] = d["mu"] * mu_multiplier
 
@@ -104,62 +168,61 @@ for lam, mu, cc in zip(lam_series, d["mu_adj"], d["c_adj"]):
 d["expected_wait_mins_adj"] = Wq_mins_adj
 d["rho_adj"] = rho_adj
 
-# Optional smoothing (visual)
+# Optional smoothing (visual only)
 if roll_window and roll_window > 0:
     d = d.sort_values("timestamp")
     for col in ["arrivals", "pred_arrivals_3h", "expected_wait_mins", "expected_wait_mins_adj"]:
         if col in d.columns:
             d[col] = d[col].rolling(int(roll_window), min_periods=1).mean()
 
-# -------------------------- Top alert & status --------------------------
-missing_service = d["mu"].isna().all()
-if missing_service:
-    st.warning(
-        "This station lacks service-rate (μ) data in the file. "
-        "What-if waits will show as **N/A** where μ is missing.",
-        icon="⚠️"
-    )
+# -------------------------- KPIs --------------------------
+kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+latest = d.iloc[-1] if len(d) else pd.Series(dtype=float)
+
+def fmt(v, nd=1):
+    return "N/A" if (v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v)))) else f"{v:.{nd}f}"
+
+latest_wait = latest.get("expected_wait_mins_adj", np.nan)
+if (pd.isna(latest_wait) or latest_wait is None) and "expected_wait_mins" in d.columns:
+    latest_wait = latest.get("expected_wait_mins", np.nan)
+latest_q = latest.get("expected_queue_len", np.nan)
+latest_rho = latest.get("rho_adj", np.nan)
+
+with kpi_col1:
+    st.metric("Latest predicted wait (mins)", fmt(latest_wait))
+with kpi_col2:
+    st.metric("Latest predicted queue length", fmt(latest_q, 2))
+with kpi_col3:
+    st.metric("Utilization ρ (latest)", fmt(latest_rho, 2))
+with kpi_col4:
+    tgt = int(wait_target)
+    status = "N/A" if pd.isna(latest_wait) else ("✅ On-target" if latest_wait <= tgt else "⚠️ Above target")
+    st.metric("Wait status vs target", status)
 
 if pd.Series(d["rho_adj"]).dropna().ge(1.0).any():
     st.error("System enters **unstable** region (ρ≥1) in the selected window. Increase **c×** or **μ×**.", icon="🔥")
 
-# -------------------------- KPIs --------------------------
-kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-
-latest = d.iloc[-1] if len(d) else pd.Series(dtype=float)
-
-# Latest wait
-latest_wait = latest.get("expected_wait_mins_adj", np.nan)
-if (pd.isna(latest_wait) or latest_wait is None) and "expected_wait_mins" in d.columns:
-    latest_wait = latest.get("expected_wait_mins", np.nan)
-
-# Queue length (if provided)
-latest_q = latest.get("expected_queue_len", np.nan)
-# Utilization
-latest_rho = latest.get("rho_adj", np.nan)
-
-# Status chip
-def wait_status(w):
-    if pd.isna(w):
-        return "N/A"
-    return "✅ On-target" if w <= wait_target else "⚠️ Above target"
-
-with kpi_col1:
-    st.metric("Latest predicted wait (mins)", f"{latest_wait:.1f}" if pd.notnull(latest_wait) else "N/A", help="From Erlang-C with current what-if multipliers")
-with kpi_col2:
-    st.metric("Latest predicted queue length", f"{latest_q:.2f}" if pd.notnull(latest_q) else "N/A")
-with kpi_col3:
-    st.metric("Utilization ρ (latest)", f"{latest_rho:.2f}" if pd.notnull(latest_rho) else "N/A", help="ρ = λ / (c·μ)")
-with kpi_col4:
-    st.metric("Wait status vs target", wait_status(latest_wait), help=f"Target ≤ {wait_target} mins")
-
 # -------------------------- Tabs --------------------------
-tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Time series", "Table", "About"])
+tabs = ["Overview", "Time series", "Table"]
+if df_summary is not None and source == "Future forecast":
+    tabs.insert(0, "Summary")
+tab_objs = st.tabs(tabs)
 
-# ------ Overview: compact snapshot ------
-with tab1:
+# ------ Optional Summary (future forecast KPIs) ------
+if "Summary" in tabs:
+    with tab_objs[0]:
+        st.subheader("Stations at risk (Future forecast)")
+        st.dataframe(df_summary.sort_values("p_wait_peak", ascending=False), use_container_width=True)
+
+# Determine tab indices based on presence of Summary
+tab_offset = 1 if "Summary" in tabs else 0
+tab_overview = tab_objs[0 + tab_offset]
+tab_timeser  = tab_objs[1 + tab_offset]
+tab_table    = tab_objs[2 + tab_offset]
+
+# ------ Overview: snapshot ------
+with tab_overview:
     left, right = st.columns((1.2, 1), vertical_alignment="top")
-
     with left:
         st.subheader("Arrivals (actual vs predicted, 3h bins)")
         plot_df = d[["timestamp", "pred_arrivals_3h", "arrivals"]].melt("timestamp", var_name="series", value_name="value")
@@ -169,20 +232,32 @@ with tab1:
             .encode(
                 x=alt.X("timestamp:T", title="Time"),
                 y=alt.Y("value:Q", title="Arrivals (3h)"),
-                color=alt.Color("series:N", title="Series", scale=alt.Scale(domain=["arrivals","pred_arrivals_3h"], range=["#4C78A8","#F58518"])),
+                color=alt.Color("series:N", title="Series",
+                                scale=alt.Scale(domain=["arrivals","pred_arrivals_3h"], range=["#4C78A8","#F58518"])),
                 tooltip=["timestamp:T","series:N","value:Q"]
             )
             .properties(height=280)
         )
+        # Uncertainty bands if present (future mode)
+        if {"lo80","hi80"}.issubset(d.columns) and d["lo80"].notna().any():
+            band80 = alt.Chart(d[["timestamp","lo80","hi80"]].dropna()).mark_area(opacity=0.15).encode(
+                x="timestamp:T", y="lo80:Q", y2="hi80:Q"
+            )
+            chart1 = band80 + chart1
+        if {"lo95","hi95"}.issubset(d.columns) and d["lo95"].notna().any():
+            band95 = alt.Chart(d[["timestamp","lo95","hi95"]].dropna()).mark_area(opacity=0.10).encode(
+                x="timestamp:T", y="lo95:Q", y2="hi95:Q"
+            )
+            chart1 = band95 + chart1
         st.altair_chart(chart1, use_container_width=True)
 
     with right:
         st.subheader("Expected wait (minutes)")
         wait_col = "expected_wait_mins_adj" if "expected_wait_mins_adj" in d.columns else "expected_wait_mins"
-        wait_df = d[["timestamp", wait_col]].rename(columns={wait_col: "wait_mins"})
+        wait_df = d[["timestamp", wait_col]].rename(columns={wait_col: "wait_mins"}).dropna()
         rule = alt.Chart(pd.DataFrame({"y": [wait_target]})).mark_rule(strokeDash=[4,4]).encode(y="y:Q")
         chart2 = (
-            alt.Chart(wait_df.dropna())
+            alt.Chart(wait_df)
             .mark_line()
             .encode(
                 x=alt.X("timestamp:T", title="Time"),
@@ -200,7 +275,7 @@ with tab1:
     )
 
 # ------ Time series: richer exploration ------
-with tab2:
+with tab_timeser:
     st.subheader("Detailed time series")
     sub_left, sub_right = st.columns(2)
 
@@ -213,10 +288,10 @@ with tab2:
         st.altair_chart((chart2 + rule).interactive(), use_container_width=True)
 
     # Utilization over time
-    util_df = d[["timestamp", "rho_adj"]].rename(columns={"rho_adj": "rho"})
+    util_df = d[["timestamp", "rho_adj"]].rename(columns={"rho_adj": "rho"}).dropna()
     util_rule = alt.Chart(pd.DataFrame({"y": [1.0]})).mark_rule(color="#D62728", strokeDash=[6,3]).encode(y="y:Q")
     util_chart = (
-        alt.Chart(util_df.dropna())
+        alt.Chart(util_df)
         .mark_line()
         .encode(
             x=alt.X("timestamp:T", title="Time"),
@@ -229,31 +304,26 @@ with tab2:
     st.altair_chart(util_chart + util_rule, use_container_width=True)
 
 # ------ Table: export & inspect ------
-with tab3:
+with tab_table:
     st.subheader("Data (filtered)")
-    show_cols = ["timestamp","stationId","arrivals","pred_arrivals_3h","lambda_hour","c","c_adj","mu","mu_adj","expected_wait_mins","expected_wait_mins_adj","expected_queue_len","rho_adj"]
+    show_cols = ["timestamp","stationId","arrivals","pred_arrivals_3h","lambda_hour","c","c_adj","mu","mu_adj",
+                 "expected_wait_mins","expected_wait_mins_adj","expected_queue_len","rho","rho_adj",
+                 "lo80","hi80","lo95","hi95","p_wait"]
     present_cols = [c for c in show_cols if c in d.columns]
     st.dataframe(d[present_cols].reset_index(drop=True), use_container_width=True, height=380)
 
     csv = d[present_cols].to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Download filtered data (CSV)", data=csv, file_name=f"evat_{sid}_filtered.csv", mime="text/csv")
 
-# ------ About: quick primer ------
-with tab4:
+# ------ About ------
+with st.expander("About this dashboard", expanded=False):
     st.markdown("""
-### What this dashboard shows
-- **Arrivals (3h bins):** actual vs predicted counts.
-- **Expected wait:** recomputed using **Erlang-C** under your what-if settings.
-- **Utilization (ρ):** load factor; if **ρ ≥ 1** the system is unstable (queues explode).
+**What this shows**
+- **Arrivals (3h bins):** actual vs predicted counts (with **80/95% bands** when available).
+- **Expected wait:** recomputed via **Erlang-C** under your what-if settings.
+- **Utilization (ρ):** stability indicator (if **ρ ≥ 1**, queue diverges).
 
-### Queueing model (M/M/c) recap
-- **λ (per hour):** arrival rate (derived from predicted 3h arrivals).
-- **μ (per hour):** per-charger service rate (from data; scaled by **μ×**).
-- **c:** number of chargers (scaled by **c×**).
-- **ρ = λ / (c·μ):** stability indicator.
-- **E[Wq] (mins):** expected waiting time in queue from Erlang-C.
-
-### Notes
-- If your file lacks μ or c, what-if recomputation is limited. Provide station-level **μ** and **c** for best results.
-- Use the **smoothing** slider to de-noise visualization without changing the underlying values.
+**Model**
+- λ per 3h from LSTM → λ per hour = λ/3 for queueing.
+- μ per hour per charger (from data or default) and **c** chargers drive **Wq** and **ρ**.
 """)
