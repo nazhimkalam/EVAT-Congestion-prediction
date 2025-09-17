@@ -10,22 +10,20 @@ from datetime import timedelta
 st.set_page_config(page_title="EVAT ChargeCast Pro — Congestion & Capacity Planner", page_icon="🔋", layout="wide")
 
 # -------------------------- Style polish --------------------------
-st.markdown(
-    """
-    <style>
-      .block-container {padding-top: 1.0rem; padding-bottom: 2rem;}
-      .stMetric {padding: .25rem .5rem;}
-      .small-cap {font-size: .82rem; opacity: .9;}
-      .tight {margin-top: -0.25rem;}
-      .ok-badge {background:#0e7c3a; color:white; padding:2px 6px; border-radius:10px; font-size:0.8rem;}
-      .warn-badge {background:#a61b29; color:white; padding:2px 6px; border-radius:10px; font-size:0.8rem;}
-      .note {opacity:.8; font-size:.9rem;}
-      .kpi-help {text-align:center; margin-top:-10px;}
-      .kpi-help span {cursor:help; user-select:none;}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+CSS = """
+<style>
+  .block-container {padding-top: 1.0rem; padding-bottom: 2rem;}
+  .stMetric {padding: .25rem .5rem;}
+  .small-cap {font-size: .82rem; opacity: .9;}
+  .tight {margin-top: -0.25rem;}
+  .ok-badge {background:#0e7c3a; color:white; padding:2px 6px; border-radius:10px; font-size:0.8rem;}
+  .warn-badge {background:#a61b29; color:white; padding:2px 6px; border-radius:10px; font-size:0.8rem;}
+  .note {opacity:.8; font-size:.9rem;}
+  .kpi-help {text-align:center; margin-top:-10px;}
+  .kpi-help span {cursor:help; user-select:none;}
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
 
 # ========================== PAGE TITLE ==========================
 st.title("🔋 EVAT ChargeCast Pro — Congestion & Capacity Planner")
